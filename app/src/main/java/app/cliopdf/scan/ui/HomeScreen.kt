@@ -65,8 +65,15 @@ fun HomeScreen(vm: AppViewModel, actions: Actions, snackbar: SnackbarHostState, 
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = pad.calculateTopPadding() + 8.dp, bottom = pad.calculateBottomPadding() + 24.dp),
         ) {
             item { Header(onSettings = { vm.go(Screen.Settings) }) }
-            item { ScanCard(actions) }
-            item { MacCard(mac?.name, onPair = { vm.go(Screen.Pair) }, onTest = { vm.testMac() }) }
+            item {
+                val s by vm.prefs.state.collectAsState()
+                ScanCard(actions, s.pageLook) { look -> vm.prefs.update { it.copy(pageLook = look) } }
+            }
+            item {
+                val unsent = docs.count { it.sentTo == null }
+                val s by vm.prefs.state.collectAsState()
+                MacCard(mac?.name, unsent, s.afterSend == "delete", onPair = { vm.go(Screen.Pair) }, onTest = { vm.testMac() }, onSendNew = { vm.sendAllNew() })
+            }
             item {
                 SectionLabel("Tools")
                 Panel(padding = 8.dp) {
@@ -145,8 +152,10 @@ private fun Header(onSettings: () -> Unit) {
     }
 }
 
+private val LOOKS = listOf("original" to "Original", "gray" to "Grayscale", "bw" to "B&W clean")
+
 @Composable
-private fun ScanCard(actions: Actions) {
+private fun ScanCard(actions: Actions, look: String, onLook: (String) -> Unit) {
     val shape = RoundedCornerShape(20.dp)
     Column(
         Modifier
@@ -174,8 +183,10 @@ private fun ScanCard(actions: Actions) {
             Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.10f)).padding(horizontal = 8.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            ScanChip(Lucide.ImagePlus, "From photos", actions.pickPhotos, Modifier.weight(1f))
+            ScanChip(Lucide.ImagePlus, "Photos", actions.pickPhotos, Modifier.weight(1f))
             ScanChip(Lucide.FileUp, "Import PDF", actions.pickPdfs, Modifier.weight(1f))
+            val i = LOOKS.indexOfFirst { it.first == look }.coerceAtLeast(0)
+            ScanChip(Lucide.Sparkles, LOOKS[i].second, { onLook(LOOKS[(i + 1) % LOOKS.size].first) }, Modifier.weight(1f))
         }
     }
 }
@@ -194,7 +205,7 @@ private fun ScanChip(icon: androidx.compose.ui.graphics.vector.ImageVector, labe
 }
 
 @Composable
-private fun MacCard(macName: String?, onPair: () -> Unit, onTest: () -> Unit) {
+private fun MacCard(macName: String?, unsent: Int, ephemeral: Boolean, onPair: () -> Unit, onTest: () -> Unit, onSendNew: () -> Unit) {
     Spacer(Modifier.height(12.dp))
     Panel(onClick = if (macName == null) onPair else onTest, padding = 14.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -205,11 +216,25 @@ private fun MacCard(macName: String?, onPair: () -> Unit, onTest: () -> Unit) {
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     if (macName == null) "Pair once with CLIO PDF Desktop, then send over your Wi-Fi."
+                    else if (ephemeral) "Encrypted over your Wi-Fi · private mode: sent files are wiped from this phone."
                     else "Documents go straight to the Mac over your Wi-Fi, encrypted.",
                     style = MaterialTheme.typography.bodySmall, color = Clio.Muted,
                 )
             }
             Text(if (macName == null) "Pair" else "Test", color = Clio.Blue, style = MaterialTheme.typography.labelLarge)
+        }
+        if (macName != null && unsent > 0) {
+            Spacer(Modifier.height(10.dp))
+            androidx.compose.material3.Button(
+                onClick = onSendNew,
+                modifier = Modifier.fillMaxWidth().height(42.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Clio.Blue),
+            ) {
+                Icon(Lucide.Send, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (unsent == 1) "Send 1 new document" else "Send $unsent new documents in one go")
+            }
         }
     }
 }

@@ -45,7 +45,7 @@ object PdfOps {
      */
     suspend fun buildFromImages(
         ctx: Context, uris: List<Uri>, out: File, ocr: Boolean, quality: Int, maxSide: Int,
-        passthroughJpeg: Boolean, progress: Progress,
+        passthroughJpeg: Boolean, look: String = "original", progress: Progress,
     ): Int {
         PDDocument().use { doc ->
             uris.forEachIndexed { i, uri ->
@@ -68,7 +68,9 @@ object PdfOps {
                     iw = bounds.outWidth; ih = bounds.outHeight
                     if (ocr) ocrBitmap = decodeBytes(bytes, 2600)
                 } else {
-                    val bmp = decodeBytes(bytes, maxSide) ?: throw IllegalStateException("A page could not be decoded.")
+                    val raw = decodeBytes(bytes, maxSide) ?: throw IllegalStateException("A page could not be decoded.")
+                    if (look != "original") progress(i, uris.size, "Cleaning up page ${i + 1}")
+                    val bmp = Enhance.apply(raw, look).also { if (it !== raw) raw.recycle() }
                     image = JPEGFactory.createFromImage(doc, bmp, quality / 100f)
                     iw = bmp.width; ih = bmp.height
                     ocrBitmap = if (ocr) bmp else { bmp.recycle(); null }

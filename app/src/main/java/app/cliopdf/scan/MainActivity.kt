@@ -147,7 +147,11 @@ fun ClioRoot(vm: AppViewModel) {
             scanQr = {
                 val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
                 GmsBarcodeScanning.getClient(activity, opts).startScan()
-                    .addOnSuccessListener { code -> code.rawValue?.let { vm.pair(it) } }
+                    .addOnSuccessListener { code ->
+                        val raw = code.rawValue
+                        if (raw == null) vm.note("The QR code couldn't be read. Try again.")
+                        else { if (vm.screen != Screen.Pair) vm.go(Screen.Pair); vm.pair(raw) }
+                    }
                     .addOnFailureListener { vm.note("The QR scanner couldn't start. Make sure Google Play services is up to date.") }
             },
             copy = { s -> clipboard.setText(AnnotatedString(s)); scope.launch { snackbar.showSnackbar("Copied.") } },
@@ -167,6 +171,15 @@ fun ClioRoot(vm: AppViewModel) {
     }
 
     busy?.let { BusyDialog(it) }
+    val alert by vm.alert.collectAsState()
+    alert?.let { a ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { vm.alert.value = null },
+            title = { androidx.compose.material3.Text(a.title) },
+            text = { androidx.compose.material3.Text(a.text) },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { vm.alert.value = null }) { androidx.compose.material3.Text("OK") } },
+        )
+    }
     text?.let { t ->
         TextDialog(
             t.title, t.text,

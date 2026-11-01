@@ -14,6 +14,7 @@ import app.cliopdf.scan.data.jpegQuality
 import app.cliopdf.scan.data.maxImageSide
 import app.cliopdf.scan.net.MacLink
 import app.cliopdf.scan.net.PairedMac
+import app.cliopdf.scan.pdf.PageRenderer
 import app.cliopdf.scan.pdf.PdfOps
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -34,6 +35,14 @@ sealed interface Screen {
 data class Busy(val title: String, val detail: String = "", val progress: Float? = null)
 data class Note(val text: String, val action: String? = null, val onAction: (() -> Unit)? = null)
 data class TextResult(val title: String, val text: String)
+data class Alert(val title: String, val text: String)
+
+sealed interface PairState {
+    data object Idle : PairState
+    data class Working(val mac: String, val step: String) : PairState
+    data class Done(val mac: String) : PairState
+    data class Failed(val mac: String?, val message: String) : PairState
+}
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     val store = DocStore(app)
@@ -44,11 +53,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val busy = MutableStateFlow<Busy?>(null)
     val mac = MutableStateFlow<PairedMac?>(link.mac)
     val textResult = MutableStateFlow<TextResult?>(null)
+    val alert = MutableStateFlow<Alert?>(null)
+    val pairState = MutableStateFlow<PairState>(PairState.Idle)
+    val macConfirmed = MutableStateFlow(link.confirmed)
     val notes = MutableSharedFlow<Note>(extraBufferCapacity = 8)
     val intents = MutableSharedFlow<Intent>(extraBufferCapacity = 4)
     val stack = mutableStateListOf<Screen>(Screen.Home)
 
-    init { refresh() }
+    init {
+        refresh()
+        // nothing temporary survives a restart: shared copies, outgoing files, scanner pages
+        viewModelScope.launch(Dispatchers.IO) { wipeTemp() }
+    }
+
+    private fun wipeTemp() {
+        val cache = getApplication<Application>().cacheDir
+        File(cache, "shared").deleteRecursively()
+        File(cache, "outgoing").deleteRecursively()
+        cache.listFiles()?.filter { it.name.contains("docscan", true) || it.name.contains("mlkit", true) }?.forEach { it.deleteRecursively() }
+    }
+
+    /** Scanner pages are written to this app's cache; remove them as soon as the PDF exists. */
+    private fun deleteScannerPages(uris: List<Uri>) {
+        val cache = getApplication<Application>().cacheDir.canonicalPath
+        uris.forEach { u ->
+            if (u.scheme == "file") u.path?.let { p -> File(p).takeIf { it.canonicalPath.startsWith(cache) }?.delete() }
+        }
+    }
 
     // ------------------------------------------------------------------ navigation
 
@@ -78,7 +109,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                note(friendly(e))
+                val msg = friendly(e)
+                if (msg.length > 110 || msg.contains('\n')) alert.value = Alert(title, msg) else note(msg)
             } finally {
                 busy.value = null
                 refresh()
@@ -104,7 +136,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (pages.isEmpty()) return
         val s = prefs.state.value
         val title = DocStore.scanTitle(s.titlePattern)
-        build(pages, title, passthrough = s.quality != "small", label = "Saving scan")
+        build(pages, title, passthrough = s.quality != "small", label = "Saving scan", scanner = true)
     }
 
     fun importImages(uris: List<Uri>) {
@@ -113,24 +145,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         build(uris, title, passthrough = false, label = "Creating PDF")
     }
 
-    private fun build(uris: List<Uri>, title: String, passthrough: Boolean, label: String) {
+    private fun build(uris: List<Uri>, title: String, passthrough: Boolean, label: String, scanner: Boolean = false) {
         val s = prefs.state.value
         job(label) { progress ->
             val (id, file) = store.newFile()
             try {
                 val pages = PdfOps.buildFromImages(
                     getApplication<Application>(), uris, file, ocr = s.autoOcr, quality = jpegQuality(s.quality),
-                    maxSide = maxImageSide(s.quality), passthroughJpeg = passthrough, progress = progress,
+                    maxSide = maxImageSide(s.quality), passthroughJpeg = passthrough && s.pageLook == "original",
+                    look = s.pageLook, progress = progress,
                 )
                 store.commit(id, title, pages, searchable = s.autoOcr)
             } catch (e: Exception) {
                 file.delete(); throw e
+            } finally {
+                if (scanner) deleteScannerPages(uris)
             }
             val doc = store.get(id)
             withContext(Dispatchers.Main) {
                 note("Saved “${doc?.title ?: title}”", "Open") { go(Screen.Document(id)) }
             }
-            if (s.autoSend && link.mac != null) sendNow(id, progress)
+            if (s.autoSend && link.mac != null) sendNow(listOf(id), progress)
         }
     }
 
@@ -304,42 +339,103 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ Mac
 
-    fun sendToMac(id: String) {
+    fun sendToMac(id: String) = sendToMac(listOf(id))
+
+    fun sendToMac(ids: List<String>) {
         if (link.mac == null) { go(Screen.Pair); return }
-        job("Sending to Mac") { progress -> sendNow(id, progress) }
+        if (ids.isEmpty()) return
+        job(if (ids.size == 1) "Sending to Mac" else "Sending ${ids.size} documents") { progress -> sendNow(ids, progress) }
     }
 
-    private suspend fun sendNow(id: String, progress: (Int, Int, String) -> Unit) {
-        val doc = store.get(id) ?: return
+    fun sendAllNew() = sendToMac(docs.value.filter { it.sentTo == null }.map { it.id })
+
+    /** Sends the documents in one encrypted payload, as PDFs or as page images, then applies the after-send rule. */
+    private suspend fun sendNow(ids: List<String>, progress: (Int, Int, String) -> Unit) {
+        val docsToSend = ids.mapNotNull { store.get(it) }
+        if (docsToSend.isEmpty()) return
         val m = link.mac ?: return
-        progress(0, 100, "Looking for ${m.name}…")
-        val name = link.send(doc.file, "${doc.title}.pdf") { f -> progress((f * 100).toInt(), 100, "Sending to ${m.name}") }
-        store.update(id, sentTo = name)
-        mac.value = link.mac
-        note("Sent to $name.")
-    }
-
-    fun pair(qr: String) {
-        job("Pairing") { progress ->
-            progress(0, 0, "Connecting to your Mac…")
-            val m = link.pair(qr)
-            mac.value = m
-            withContext(Dispatchers.Main) { back() }
-            note("Paired with ${m.name}. You can now send documents to it.")
+        val s = prefs.state.value
+        val outgoing = File(getApplication<Application>().cacheDir, "outgoing").apply { deleteRecursively(); mkdirs() }
+        try {
+            val files = mutableListOf<Pair<File, String>>()
+            if (s.sendAs == "images") {
+                docsToSend.forEachIndexed { di, d ->
+                    PageRenderer(d.file).use { r ->
+                        for (i in 0 until r.pageCount) {
+                            progress(i, r.pageCount, "Preparing ${d.title} — page ${i + 1}")
+                            val (w, h) = r.pageSize(i)
+                            val px = (w * 200f / 72f).toInt().coerceIn(600, 2400)
+                            val bmp = r.render(i, px, (px * h / w.coerceAtLeast(1)).coerceAtMost(3600))
+                            val name = if (r.pageCount == 1) "${d.title}.jpg" else "${d.title} - p${i + 1}.jpg"
+                            val f = File(outgoing, "$di-$i.jpg")
+                            f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, it) }
+                            bmp.recycle()
+                            files += f to name
+                        }
+                    }
+                }
+            } else {
+                docsToSend.forEach { files += it.file to "${it.title}.pdf" }
+            }
+            val folder = if (docsToSend.size == 1) docsToSend[0].title else DocStore.scanTitle("From phone {date}")
+            val name = link.send(files, folder, onStep = { progress(0, 0, it) }) { f ->
+                progress((f * 100).toInt(), 100, "Sending to ${m.name} (encrypted)")
+            }
+            mac.value = link.mac; macConfirmed.value = true
+            if (s.afterSend == "delete") {
+                docsToSend.forEach { store.delete(it.id) }
+                withContext(Dispatchers.Main) { if (screen is Screen.Document || screen is Screen.Organize) home() }
+                note(if (docsToSend.size == 1) "Sent to $name and removed from this phone." else "${docsToSend.size} documents sent to $name and removed from this phone.")
+            } else {
+                docsToSend.forEach { store.update(it.id, sentTo = name) }
+                note(if (docsToSend.size == 1) "Sent to $name." else "${docsToSend.size} documents sent to $name.")
+            }
+        } finally {
+            outgoing.deleteRecursively()
         }
     }
 
+    /** Called with the text of the scanned QR code. */
+    fun pair(qr: String) {
+        val m = try { link.accept(qr) } catch (e: Exception) {
+            pairState.value = PairState.Failed(null, e.message ?: "This QR code can't be used."); return
+        }
+        mac.value = m; macConfirmed.value = false
+        confirmPairing()
+    }
+
+    fun confirmPairing() {
+        val m = link.mac ?: return
+        if (pairState.value is PairState.Working) return
+        pairState.value = PairState.Working(m.name, "QR code read. Contacting ${m.name}…")
+        viewModelScope.launch {
+            try {
+                link.hello { step -> pairState.value = PairState.Working(m.name, step) }
+                mac.value = link.mac; macConfirmed.value = true
+                pairState.value = PairState.Done(m.name)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                pairState.value = PairState.Failed(m.name, e.message ?: "The Mac couldn't be reached.")
+            }
+        }
+    }
+
+    fun phoneIp(): String? = link.phoneIp()
+
+    fun resetPairState() { if (pairState.value !is PairState.Working) pairState.value = PairState.Idle }
+
     fun testMac() {
         job("Checking connection") { progress ->
-            progress(0, 0, "Looking for ${link.mac?.name ?: "your Mac"}…")
-            link.test()
-            mac.value = link.mac
+            link.hello { progress(0, 0, it) }
+            mac.value = link.mac; macConfirmed.value = true
             note("${link.mac?.name ?: "Your Mac"} is reachable.")
         }
     }
 
     fun unpair() {
-        link.unpair(); mac.value = null
+        link.unpair(); mac.value = null; macConfirmed.value = false
+        pairState.value = PairState.Idle
         note("This phone is no longer paired with a Mac.")
     }
 

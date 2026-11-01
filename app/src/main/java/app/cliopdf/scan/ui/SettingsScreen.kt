@@ -89,6 +89,13 @@ fun SettingsScreen(vm: AppViewModel, actions: Actions, snackbar: SnackbarHostSta
                         vm.prefs.update { it.copy(galleryInScanner = v) }
                     }
                     Divider()
+                    ChoiceRow("Page look", listOf("original" to "Original", "gray" to "Grayscale", "bw" to "Black & white"), s.pageLook,
+                        help = when (s.pageLook) {
+                            "gray" -> "Removes shadows and evens out the paper, keeps shades of grey."
+                            "bw" -> "Crisp black text on white, like a flatbed scanner. Best for forms and letters."
+                            else -> "Keeps colours as captured (you can still pick a filter in the scanner)."
+                        }) { v -> vm.prefs.update { it.copy(pageLook = v) } }
+                    Divider()
                     ChoiceRow("Pages per scan", listOf("0" to "No limit", "1" to "1", "10" to "10", "30" to "30"), s.pageLimit.toString()) { v ->
                         vm.prefs.update { it.copy(pageLimit = v.toInt()) }
                     }
@@ -148,6 +155,18 @@ fun SettingsScreen(vm: AppViewModel, actions: Actions, snackbar: SnackbarHostSta
                     }
                     if (mac != null) {
                         Divider()
+                        ChoiceRow("Send as", listOf("pdf" to "PDF", "images" to "Images (JPG)"), s.sendAs,
+                            help = if (s.sendAs == "images") "Each page arrives on the Mac as a separate JPG; several pages go in one transfer."
+                            else "Each document arrives as one PDF; several documents go in one transfer.") { v ->
+                            vm.prefs.update { it.copy(sendAs = v) }
+                        }
+                        Divider()
+                        ChoiceRow("After sending", listOf("keep" to "Keep on phone", "delete" to "Delete from phone"), s.afterSend,
+                            help = if (s.afterSend == "delete") "Private mode: once the Mac confirms it received the files, they are wiped from this phone."
+                            else "Documents stay in CLIO Scan after they are sent.") { v ->
+                            vm.prefs.update { it.copy(afterSend = v) }
+                        }
+                        Divider()
                         ToggleRow("Send new scans automatically", "Each new scan goes to ${mac?.name} right after it's saved.", s.autoSend) { v ->
                             vm.prefs.update { it.copy(autoSend = v) }
                         }
@@ -165,7 +184,8 @@ fun SettingsScreen(vm: AppViewModel, actions: Actions, snackbar: SnackbarHostSta
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 "No account, no cloud and no analytics. Documents are kept inside CLIO Scan, are excluded from cloud " +
-                                    "backup and leave the phone only when you share them or send them to your own Mac. Text recognition " +
+                                    "backup and leave the phone only when you share them or send them to your own Mac. Scanned pages never go to " +
+                                    "your gallery, and the scanner's temporary images are deleted as soon as the PDF is made. Text recognition " +
                                     "runs on the phone and also works in airplane mode. PDFs made by CLIO Scan carry no author or software details.",
                                 style = MaterialTheme.typography.bodySmall, color = Clio.Text2,
                             )
