@@ -311,7 +311,8 @@ object PdfOps {
             }
             if (xo !is PDImageXObject) continue
             val cos = xo.cosObject
-            done[cos]?.let { res.put(name, it); continue }
+            val already = done[cos]
+            if (already != null) { res.put(name, already); continue }
             if (xo.isStencil || xo.bitsPerComponent == 1) continue
             if (cos.containsKey(COSName.SMASK) || cos.containsKey(COSName.MASK)) continue
             val before = cos.length
