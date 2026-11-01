@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files sent to the Mac travel over the local Wi-Fi only and are encrypted end-to-end with
+     AES-256-GCM using the key from the pairing QR code, so plain HTTP on the LAN is acceptable. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

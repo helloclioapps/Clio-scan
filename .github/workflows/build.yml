@@ -1,0 +1,68 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Prepare signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.CLIO_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CLIO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CLIO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CLIO_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "CLIO_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "CLIO_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "CLIO_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "CLIO_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+          else
+            # Key kept in this private repository so every build can update the previous one.
+            echo "CLIO_KEYSTORE=$GITHUB_WORKSPACE/signing/clio-scan-release.jks" >> "$GITHUB_ENV"
+            echo "CLIO_KEYSTORE_PASSWORD=clio-scan-2026" >> "$GITHUB_ENV"
+            echo "CLIO_KEY_ALIAS=clio-scan" >> "$GITHUB_ENV"
+            echo "CLIO_KEY_PASSWORD=clio-scan-2026" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        run: gradle --no-daemon assembleRelease
+
+      - name: Name the APK
+        run: |
+          V=$(grep '^name=' version.properties | cut -d= -f2)
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk "out/CLIO-Scan-$V.apk"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CLIO-Scan-APK
+          path: out/*.apk
+          if-no-files-found: error
+
+      - name: Publish release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.apk
