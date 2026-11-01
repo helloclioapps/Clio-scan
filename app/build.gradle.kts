@@ -18,6 +18,8 @@ android {
         targetSdk = 35
         versionCode = versionProps.getProperty("code").toInt()
         versionName = versionProps.getProperty("name")
+        // phones only (drops emulator x86 builds of the bundled text-recognition engine; ~25 MB smaller)
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
     signingConfigs {
