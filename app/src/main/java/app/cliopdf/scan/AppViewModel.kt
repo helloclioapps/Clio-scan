@@ -119,7 +119,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val (id, file) = store.newFile()
             try {
                 val pages = PdfOps.buildFromImages(
-                    getApplication(), uris, file, ocr = s.autoOcr, quality = jpegQuality(s.quality),
+                    getApplication<Application>(), uris, file, ocr = s.autoOcr, quality = jpegQuality(s.quality),
                     maxSide = maxImageSide(s.quality), passthroughJpeg = passthrough, progress = progress,
                 )
                 store.commit(id, title, pages, searchable = s.autoOcr)
@@ -266,7 +266,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val dir = File(getApplication<Application>().cacheDir, "shared").apply { deleteRecursively(); mkdirs() }
         val f = File(dir, "${doc.title}.pdf")
         doc.file.copyTo(f, overwrite = true)
-        return FileProvider.getUriForFile(getApplication(), "${getApplication<Application>().packageName}.files", f)
+        return FileProvider.getUriForFile(getApplication<Application>(), "${getApplication<Application>().packageName}.files", f)
     }
 
     fun share(id: String) {

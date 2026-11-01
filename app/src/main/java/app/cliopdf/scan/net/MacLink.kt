@@ -92,7 +92,11 @@ class MacLink(private val context: Context) {
 
     var mac: PairedMac?
         get() = sp.getString("paired", null)?.let { PairedMac.fromJson(it) }
-        private set(v) { sp.edit().apply { if (v == null) remove("paired") else putString("paired", v.toJson()) }.apply() }
+        private set(v) {
+            val e = sp.edit()
+            if (v == null) e.remove("paired") else e.putString("paired", v.toJson())
+            e.apply()
+        }
 
     fun unpair() { mac = null }
 
@@ -209,7 +213,7 @@ class MacLink(private val context: Context) {
 
     /** Finds the Mac on the local network through Bonjour (DNS-SD). */
     private suspend fun discover(macId: String): Pair<String, Int>? = withTimeoutOrNull(3000) {
-        suspendCancellableCoroutine { cont ->
+        suspendCancellableCoroutine<Pair<String, Int>?> { cont ->
             val nsd = context.getSystemService(NsdManager::class.java)
             val wifi = context.applicationContext.getSystemService(WifiManager::class.java)
             val lock = wifi?.createMulticastLock("clio-scan")?.apply { setReferenceCounted(false); acquire() }
